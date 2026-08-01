@@ -1,57 +1,80 @@
-from passlib.context import CryptContext
+"""HTTP-слой Auth-домена."""
 
-# bcrypt через passlib
-_pwd_context = CryptContext(
-    schemes=["bcrypt"],
-    deprecated="auto"
+from __future__ import annotations
+
+from fastapi import APIRouter, status
+
+from app.core.dependencies import CurrentUser, DbSession
+from app.domain.auth.schemas import (
+    LoginRequest,
+    RefreshRequest,
+    RegisterRequest,
+    TokenPairResponse,
+    UserResponse,
+)
+from app.domain.auth.service import AuthService
+
+
+router = APIRouter(
+    prefix="/auth",
+    tags=["auth"],
 )
 
 
-def hash_password(password: str) -> str:
-    """
-    Создание хеша пароля.
-    bcrypt имеет лимит 72 байта,
-    поэтому обрезаем безопасно.
-    """
-    if not isinstance(password, str):
-        password = str(password)
+@router.post(
+    "/register",
+    response_model=TokenPairResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+async def register(
+    data: RegisterRequest,
+    session: DbSession,
+) -> TokenPairResponse:
+    service = AuthService(session)
 
-    password = password.strip()
+    user = await service.register(data)
 
-    # bcrypt максимум 72 байта
-    password_bytes = password.encode("utf-8")
-
-    if len(password_bytes) > 72:
-        password = password_bytes[:72].decode(
-            "utf-8",
-            errors="ignore"
-        )
-
-    return _pwd_context.hash(password)
+    return await service.issue_token_pair(user.id)
 
 
-def verify_password(
-    plain_password: str,
-    hashed_password: str
-) -> bool:
-    """
-    Проверка пароля.
-    """
+@router.post(
+    "/login",
+    response_model=TokenPairResponse,
+)
+async def login(
+    data: LoginRequest,
+    session: DbSession,
+) -> TokenPairResponse:
+    service = AuthService(session)
 
-    if not isinstance(plain_password, str):
-        plain_password = str(plain_password)
-
-    plain_password = plain_password.strip()
-
-    password_bytes = plain_password.encode("utf-8")
-
-    if len(password_bytes) > 72:
-        plain_password = password_bytes[:72].decode(
-            "utf-8",
-            errors="ignore"
-        )
-
-    return _pwd_context.verify(
-        plain_password,
-        hashed_password
+    user = await service.authenticate(
+        data.email,
+        data.password,
     )
+
+    return await service.issue_token_pair(user.id)
+
+
+@router.post(
+    "/refresh",
+    response_model=TokenPairResponse,
+)
+async def refresh(
+    data: RefreshRequest,
+    session: DbSession,
+) -> TokenPairResponse:
+    service = AuthService(session)
+
+    return await service.refresh_tokens(
+        data.refresh_token
+    )
+
+
+@router.get(
+    "/me",
+    response_model=UserResponse,
+)
+async def get_me(
+    user: CurrentUser,
+) -> UserResponse:
+    return UserResponse.model_validate(user)
