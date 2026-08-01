@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import subprocess
+from pathlib import Path
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
@@ -18,9 +20,56 @@ from app.infrastructure.db.session import engine
 logger = get_logger(__name__)
 
 
+def run_migrations():
+    """
+    Запуск alembic миграций.
+    Работает и локально, и на Render.
+    """
+
+    try:
+        # english-app-complete/
+        # ├── alembic.ini
+        # └── backend/
+        #     └── app/
+        #         └── main.py
+
+        project_root = Path(__file__).resolve().parents[2]
+
+        alembic_file = project_root / "alembic.ini"
+
+        if not alembic_file.exists():
+            logger.warning(
+                "alembic_not_found",
+                path=str(alembic_file)
+            )
+            return
+
+        subprocess.run(
+            [
+                "alembic",
+                "-c",
+                str(alembic_file),
+                "upgrade",
+                "head",
+            ],
+            cwd=str(project_root),
+            check=True,
+        )
+
+        logger.info("migration_success")
+
+    except Exception as e:
+        logger.error(
+            "migration_failed",
+            error=str(e)
+        )
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     configure_logging()
+
+    run_migrations()
 
     logger.info(
         "app_startup",
@@ -35,34 +84,20 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
 
 def create_app() -> FastAPI:
+
     app = FastAPI(
         title=settings.app_name,
         debug=settings.debug,
         lifespan=lifespan,
     )
 
-    # CORS для Netlify + локальной разработки
-    allowed_origins = [
-        "https://clever-dusk-364fcc.netlify.app",
-        "https://cosmic-mandazi-cf5cc1.netlify.app",
-        "http://localhost:3000",
-        "http://localhost:4173",
-        "http://127.0.0.1:3000",
-        "http://127.0.0.1:4173",
-    ]
-
-    # если в Render есть переменная CORS_ALLOW_ORIGINS
-    # добавляем её тоже
-    try:
-        if settings.cors_allow_origins:
-            allowed_origins.extend(settings.cors_allow_origins)
-    except Exception:
-        pass
-
 
     app.add_middleware(
         CORSMiddleware,
-        allow_origins=list(set(allowed_origins)),
+        allow_origins=[
+            "https://clever-dusk-364fcc.netlify.app",
+            "https://cosmic-mandazi-cf5cc1.netlify.app",
+        ],
         allow_credentials=True,
         allow_methods=["*"],
         allow_headers=["*"],
@@ -71,15 +106,14 @@ def create_app() -> FastAPI:
 
     register_error_handlers(app)
 
-
     app.include_router(
         api_router,
-        prefix=settings.api_prefix
+        prefix=settings.api_prefix,
     )
 
 
     @app.get("/health", tags=["system"])
-    async def health() -> dict[str, str]:
+    async def health():
         return {
             "status": "ok"
         }
